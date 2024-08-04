@@ -78,7 +78,7 @@ fi
 if [ $? -eq 0 ] && [ -d mymcscanx ] && [ -s mymcscanx/mcscanx.collinearity ]
 then
     echo "MCSCANX.sh finished successfully, extract allelic contig pairs or micro collinear blocks"
-    ./bin/EXTRACT_paris.sh
+    ./bin/EXTRACT_pairs.sh
 else
     echo "MCSCANX.sh failed, stop pipeline"
     exit 1
