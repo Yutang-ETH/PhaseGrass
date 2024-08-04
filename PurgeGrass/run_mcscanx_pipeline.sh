@@ -5,8 +5,8 @@
 # set path to reference, transcripts and reference.fai
 # actually, it is not transcripts but gene models (DNA sequences of genes)
 
-reference=xanthia.nextpolish.asm.fasta
-fai=xanthia.nextpolish.asm.fasta.fai
+reference=sikem.asm.p_ctg.fasta
+fai=sikem.asm.p_ctg.fasta.fai
 transcripts=Rabiosa_v1_maker_transcripts_Lmu01_slp.fa
 haplotig_log=curated.contig_associations.log
 busco=full_table.tsv
