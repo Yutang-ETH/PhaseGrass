@@ -1,0 +1,91 @@
+# generate new fasta file with the edited Hi-C contact map after manual curation
+
+# author: Yutang Chen,  MPB, ETH Zurich
+
+# 15.07.2023
+
+################################################################################
+####### start setting parameter ################################################
+################################################################################
+
+# the name of the assembly file in the reference folder
+ASM = 'sample.fasta'
+
+# specify a name for the wrapped assembly file
+ASM_wrapped = 'sample_wrapped.fasta'
+
+# the name of the .assembly file after manual curation
+reviewed_assembly = 'sample.review.assembly'
+
+# specify final output file name
+FINAL_fasta = 'sample_wrapped.FINAL.fasta'
+FINAL_fasta_renamed = 'sample_wrapped.FINAL.renamed.fasta'
+
+# specify the number of chromosomes
+chromosomes = 7
+
+# specify the path to the fasta wrapper script
+wrap_fasta_script = '/scratch/yutang/juicer/3d-dna/utils/wrap-fasta-sequence.awk'
+
+# specify the path to post review script
+post_review_script = '/scratch/yutang/juicer/3d-dna/run-asm-pipeline-post-review.sh'
+
+# specify the path to the generate cprops script
+generate_cprops_script = '/scratch/yutang/juicer/3d-dna/utils/generate-cprops-file.awk'
+
+################################################################################
+####### end setting parameter ##################################################
+################################################################################
+
+
+################################################################################
+####### below is the snakemake pipeline, please don't edit #####################
+################################################################################
+rule all:
+	input:
+		FINAL_fasta_renamed
+
+################################################################################
+# first wrap the original fasta
+rule wrap_original_fasta:
+	input:
+		'references/' + ASM 
+	output:
+		'references/' + ASM_wrapped
+	params:
+		wrap_fasta = wrap_fasta_script
+	shell:
+		'''
+		awk -f {params.wrap_fasta} {input} > {output}
+		'''
+
+# now do the post review script
+rule post_review_pipeline:
+	input:
+		assembly = reviewed_assembly,
+		wrapped_fasta = 'references/' + ASM_wrapped,
+		mnd = 'aligned/merged_nodups.txt'
+	output:
+		fasta = FINAL_fasta,
+		success = 'post_review.success'
+	params:
+		post_review = post_review_script
+	shell:
+		'''
+		{params.post_review} -g 100 -r {input.assembly} {input.wrapped_fasta} {input.mnd} && touch post_review.success
+		'''
+
+# now rename the FINAL assembly
+rule rename_FINAL_assembly:
+	input:
+		fasta = FINAL_fasta,
+		success = 'post_review.success'
+	output:
+		FINAL_fasta_renamed
+	params:
+		chr = chromosomes,
+		unplaced = chromosomes + 1
+	shell:
+		'''
+		cat <(seqkit range -r 1:{params.chr} {input.fasta} | seqkit replace -p HiC_scaffold_ -r 'chr') <(seqkit range -r {params.unplaced}:-1 {input.fasta} | seqkit replace -p HiC_scaffold_ -r 'unplaced') > {output}
+		'''
