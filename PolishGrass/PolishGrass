@@ -1,0 +1,267 @@
+# PolishGrass polished the haplotype assemblies generated from the binned ONT reads
+
+# author: Yutang Chen,  MPB, ETH Zurich
+
+
+################################################################################
+###### start setting parameters, edit below parameters #########################
+###### for those with a comment, no edit, you don't need to edit ############### 
+################################################################################
+
+# input files
+# specify name of short reads, and these files should be put in wgs_short folder
+WGS_short = ['20201113.B-M2029_18_R1.noN.fa.gz', '20201113.B-M2029_18_R2.noN.fa.gz']
+
+# speficy sample name
+SAMPLE = 'sample' 
+
+# define haplotype, no edit
+hap = ['h1', 'h2']
+
+# nextpolish parameters
+# number of threads for mapping long reads
+minimap2_threads = 60
+
+# the samtools sort -m parameter, set according to your resouce, use 1G or lower to be safe
+samtools_sort_mem = '1g'
+
+# path to nextpolish2 script
+nextpolish2_script = '/home/yutachen/anaconda3/envs/nextpolish/share/nextpolish-1.4.1/lib/nextpolish2.py'
+
+# threads of extracting haploid assembly
+extract_hap_threads = 20
+
+################################################################################
+####################### end setting parameters #################################
+################################################################################
+
+################################################################################
+###### below is the snakemake pipeline, please don't eidt anything below #######
+################################################################################
+################################################################################
+
+rule all:
+	input:
+		'final/assembly.stats'
+
+################################################################################
+# before polishing, change the header of each haplotyp, add h1/h2 suffix to the header
+rule add_hap_suffix_to_header:
+	input:
+		asm = 'contig/' + SAMPLE + '_' + '{haplotype}' + '.fasta'
+	output:
+		'contig_renamed/' + SAMPLE + '_' + '{haplotype}' + '.fasta'
+	shell:
+		'''
+		seqkit replace -p .+ -r "contig{{nr}}_{wildcards.haplotype}" {input.asm} -o {output}
+		'''
+
+################################################################################
+# first round of nextpolish
+rule nextpolish_round_1_mapping:
+	input:
+		asm = 'contig_renamed/' + SAMPLE + '_' + '{haplotype}' + '.fasta',
+		read = 'wgs_long/' + SAMPLE + '_' + '{haplotype}' + '.fastq.gz'
+	output:
+		'polish_long/{haplotype}/round1/lgs.sort.bam'
+	params:
+		mem  = samtools_sort_mem
+	threads:
+		minimap2_threads
+	shell:
+		'''
+		minimap2 -ax map-ont -t {threads} -2 {input.asm} {input.read} | samtools sort - -m {params.mem} -@ {threads} -o {output}
+		'''
+
+# index bam
+rule nextpolish_round_1_index:
+	input:
+		'polish_long/{haplotype}/round1/lgs.sort.bam'
+	output:
+		'polish_long/{haplotype}/round1/lgs.sort.bam.bai'
+	shell:
+		'''
+		samtools index {input}
+		'''
+
+# make the fofn file for nextpolish
+rule nextpolish_round_1_fofn:
+	input:
+		idx = 'polish_long/{haplotype}/round1/lgs.sort.bam.bai',
+		bam = 'polish_long/{haplotype}/round1/lgs.sort.bam'
+	output:
+		'polish_long/{haplotype}/round1/lgs.sort.bam.fofn'
+	shell:
+		'''
+		ls `pwd`/{input.bam} > {output}
+		'''
+
+# run first round nextplish long read polishing
+rule nextpolish_round_1_polishing:
+	input:
+		fofn = 'polish_long/{haplotype}/round1/lgs.sort.bam.fofn',
+		asm = 'contig_renamed/' + SAMPLE + '_' + '{haplotype}' + '.fasta'
+	output:
+		'polish_long/{haplotype}/round1/genome.nextpolish.fasta'
+	params:
+		nextpolish2 = nextpolish2_script
+	threads:
+		minimap2_threads
+	shell:
+		'''
+		python {params.nextpolish2} -g {input.asm} -l {input.fofn} -r ont -p {threads} -sp -o {output}
+		'''
+
+###################################################################################
+# second round of nextpolish
+rule nextpolish_round_2_mapping:
+	input:
+		asm = 'polish_long/{haplotype}/round1/genome.nextpolish.fasta',
+		read = 'wgs_long/' + SAMPLE + '_' + '{haplotype}' + '.fastq.gz'
+	output:
+		'polish_long/{haplotype}/round2/lgs.sort.bam'
+	params:
+		mem  = samtools_sort_mem
+	threads:
+		minimap2_threads
+	shell:
+		'''
+		minimap2 -ax map-ont -t {threads} {input.asm} {input.read} | samtools sort - -m {params.mem} -@ {threads} -o {output}
+		'''
+
+# index bam
+rule nextpolish_round_2_index:
+	input:
+		'polish_long/{haplotype}/round2/lgs.sort.bam'
+	output:
+		'polish_long/{haplotype}/round2/lgs.sort.bam.bai'
+	shell:
+		'''
+		samtools index {input}
+		'''
+
+# make the fofn file for nextpolish
+rule nextpolish_round_2_fofn:
+	input:
+		idx = 'polish_long/{haplotype}/round2/lgs.sort.bam.bai',
+		bam = 'polish_long/{haplotype}/round2/lgs.sort.bam'
+	output:
+		'polish_long/{haplotype}/round2/lgs.sort.bam.fofn'
+	shell:
+		'''
+		ls `pwd`/{input.bam} > {output}
+		'''
+
+# run second round nextplish long read polishing
+rule nextpolish_round_2_polishing:
+	input:
+		fofn = 'polish_long/{haplotype}/round2/lgs.sort.bam.fofn',
+		asm = 'polish_long/{haplotype}/round1/genome.nextpolish.fasta'
+	output:
+		'polish_long/{haplotype}/round2/genome.nextpolish.fasta'
+	params:
+		nextpolish2 = nextpolish2_script
+	threads:
+		minimap2_threads
+	shell:
+		'''
+		python {params.nextpolish2} -g {input.asm} -l {input.fofn} -r ont -p {threads} -sp -o {output}
+		'''
+
+###################################################################################
+# now concatenate hap1 and hap2 to make a diploid fasta
+# then polish the diploid fasta with short reads using hapog
+rule concatenate_hap:
+	input:
+		expand('polish_long/{haplotype}/round2/genome.nextpolish.fasta', haplotype = hap)
+	output:
+		'polished_long_cat/long_read_polished_dip.fasta'
+	shell:
+		'''
+		cat {input} > {output}
+		'''
+
+# first round of hapog
+rule hapog_round_1:
+	input:
+		fasta = 'polished_long_cat/long_read_polished_dip.fasta',
+		fastq1 = 'wgs_short/' + WGS_short[0],
+		fastq2 = 'wgs_short/' + WGS_short[1]
+	output:
+		'hapog_round1.success'
+	params:
+		out = 'hapog_round1'
+	threads:
+		minimap2_threads
+	shell:
+		'''
+		hapog --genome {input.fasta} --pe1 {input.fastq1} --pe2 {input.fastq2} -o {params.out} -t {threads} -u && touch {output}
+		'''
+
+# second round of hapog
+rule hapog_round_2:
+	input:
+		round1 = 'hapog_round1.success',
+		fastq1 = 'wgs_short/' + WGS_short[0],
+		fastq2 = 'wgs_short/' + WGS_short[1]
+	output:
+		'hapog_round2.success'
+	params:
+		fasta = 'hapog_round1/hapog_results/hapog.fasta',
+		out = 'hapog_round2'
+	threads:
+		minimap2_threads
+	shell:
+		'''
+		hapog --genome {params.fasta} --pe1 {input.fastq1} --pe2 {input.fastq2} -o {params.out} -t {threads} -u && touch {output}
+		'''
+
+# move the second round corrected fasta to a new folder
+rule move_polca_round2_fa_to_final_folder:
+	input:
+		round2 = 'hapog_round2.success'
+	output:
+		'final_dip/' + SAMPLE + '.nextpolish.hapog.polished.dip.fasta'
+	params:
+		fasta = 'hapog_round2/hapog_results/hapog.fasta'
+	shell:
+		'''
+		mv {params.fasta} {output}
+		'''	
+
+# get the header list of each hap:
+rule get_header_list:
+	input:
+		'contig_renamed/' + SAMPLE + '_' + '{haplotype}' + '.fasta'
+	output:
+		'contig_renamed/{haplotype}.lst'
+	shell:
+		'''
+		seqkit seq -n -i {input} > {output}
+		'''
+
+# extract haploid assembly from the diploid fasta
+rule extract_haploid_assembly:
+	input:
+		fasta = 'final_dip/' + SAMPLE + '.nextpolish.hapog.polished.dip.fasta',
+		lst = 'contig_renamed/{haplotype}.lst'
+	output:
+		'final_hap/' + SAMPLE + '.nextpolish.hapog.polished.{haplotype}.fasta'
+	threads:
+		extract_hap_threads
+	shell:
+		'''
+		seqkit grep -f {input.lst} -j {threads} {input.fasta} -o {output}
+		'''
+
+# get some stats for the final assemblies
+rule get_stats_of_final_assemblies:
+	input:
+		dip = 'final_dip/' + SAMPLE + '.nextpolish.hapog.polished.dip.fasta',
+		hap = expand('final_hap/' + SAMPLE + '.nextpolish.hapog.polished.{haplotype}.fasta', haplotype = hap)
+	output:
+		'final/assembly.stats'
+	shell:
+		'''
+		seqkit stats -a -b -T {input.dip} {input.hap} > {output}
+        '''
