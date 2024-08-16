@@ -1,0 +1,626 @@
+# DipGrass phases SNPs through chromosomes and genrates two chromosome-level haplotypes (combinmation of alleles)
+
+# author: Yutang Chen, MPB, ETH Zurich
+
+# built on top of hapcut2 Hi-C recipe, https://github.com/vibansal/HapCUT2/blob/master/HiC/Snakefile
+
+################################################################################
+###### start setting parameters, edit below parameters #########################
+###### for those with a comment, no edit, you don't need to edit ############### 
+################################################################################
+
+# change this list to limit the chromosomes analyzed
+# change chr number accordingly, for 7 chrs, set (1, 8)
+# the second value in the parenthesis matters, it should be equal to chr number + 1  
+chrs_list = ['chr{}'.format(i) for i in range(1,8)]
+
+# no edit 
+chrs_character = ' '.join(chrs_list)
+
+# specify the sample name
+SAMPLE = 'sample' 
+
+# specify the name of the unphased haploid assembly, and it should be put in the asm folder
+ASSEMBLY = 'sample.fasta'
+
+# specify the name of short read files, and they should be put in the wgs_short folder
+WGS_short = ['sample_R1.noN.fastq.gz', 'sample_R2.noN.fastq.gz'] 
+
+# specify the name of the Hi-C reads, and they shoudl be put in the hic folder
+HIC = ['Hic_reads_R1.fastq.gz', 'Hic_reads_R2.fastq.gz']
+
+# specify the name of the long read file, and it should be put in the wgs_long folder
+WGS_long = 'S23_all_q7a.fq.gz' 
+
+# initial steps parameters
+# specify the number of threads for mapping short reads
+initial_map_wgs_short_reads_threads = 48 
+
+# samtools sort -m parameter, change according to your machine, but 1G shoudl be fine
+initial_map_wgs_short_reads_samsortmem = '1G'
+
+# the size of genomic chunks to be run in parallel for SNP calling by freebayes-parallel, no need to change
+initial_make_freebayes_region_file_chunksize = 10000000
+
+# number of parallel SNP calling by freebayes, should not be greater than the total number of CPU demanded
+initial_call_variants_cpus = 48
+
+# SNP filtering parameters, if you are confident about what you are doing, then edit. Otherwise, no edit.
+initial_vcf_filter_expression = "'QUAL>20 && INFO/DP>10'"
+
+# bwa and winnowmap read group, no edit
+read_align_rg = '@RG\\\\tID:1\\\\tSM:' + SAMPLE
+
+# hapcut2 parameters
+# specify the path to picard
+PICARD = '/scratch/yutang/phase_grass/share/picard-3.0.0-1/picard.jar'
+
+# specify number of threads for Hi-C mapping
+hapcut2_align_fastq_threads = 48
+
+# samtools sort -m value, 1G should be fine, no edit
+hapcut2_align_fastq_samsortmem = '1G'
+
+# maximum insert size of Hi-C, should be lower than the size of the smallest chromosome
+# for ryegrass I set 200 Mb
+hapcut2_hic_extract_hairs_insertsize = 200000000
+
+# picard mark duplicate maxfilehandle, I used 8000. Picard crashes if it is too high. leave it no edit, otherwise decrease the value a bit
+hapcut2_mark_duplicates_maxfilehandle = 8000
+
+# the maximum RAM for picard, change according to your machine
+hapcut2_mark_duplicates_javaXmx = '-Xmx300g'
+
+# whatshap parameters
+# Find_unmapped_read.py must be placed in the working folder
+
+# number of threads for long read mapping
+whatshap_winnowmap_map_long_threads = 48
+
+# preset for winnowmap, map-ont for ONT, map-pb for hifi
+whatshap_winnowmap_map_long_map_preset = 'map-ont' 
+
+# samtools sort -m parameter, 1G should be fine, no edit
+whatshap_winnowmap_map_long_samsortmem = '1G'
+
+# no edit
+whatshap_haplotag_sample = SAMPLE
+
+# threads for whatshap haplotagging, ideally, should be equal to total number of threads/number of chromosomes
+# but you can set a number you like (no higher than the total number of threads demanded)
+whatshap_haplotag_threads = 5 
+
+# threads for extracting haplotagged long reads, ideally, should be equal to total number of threads/number of chromosomes
+# but you can set a number you like (no higher than the total number of threads demanded)
+whatshap_extract_reads_threads = 10 
+
+################################################################################
+####################### end setting parameters #################################
+################################################################################
+
+################################################################################
+###### below is the snakemake pipeline, please don't eidt anything below #######
+################################################################################
+################################################################################
+
+localrules: binned_long_reads_stats
+
+rule binned_long_reads_stats:
+    input:
+        'whatshap_phased_read_fastq/binned_reads.stats'
+
+################################################################################
+# initial steps
+# extract only chrs from the input assembly
+# bwa index the extracted chrs assembly
+# before hapcut2 and whatshap, a vcf file with SNPs is required
+# map accurate short reads to the chrs assembly using bwa mem and output a bam file
+# call SNPs based on the bam file using freebayes
+# filter SNPs based on QV > 10 and read depth > 10 using bcftools
+# split the filtered vcf to every chr, chr1.vcf, chr2.vcf ...
+
+# extrac chrs from the input assembly
+rule initial_extract_asm_chr:
+    input: 
+        'asm/' + ASSEMBLY
+    output: 
+        'asm/' + ASSEMBLY + '.chr.fa'
+    params: 
+        chrs = chrs_character
+    shell:
+        '''
+        samtools faidx {input} {params.chrs} > {output}
+        '''
+
+# index chrs assembly
+rule initial_index_genome:
+    input:  
+        'asm/' + ASSEMBLY + '.chr.fa'
+    output: 
+        'asm/' + ASSEMBLY + '.chr.fa' + '.bwt'
+    shell:
+        '''
+        bwa index {input}
+        '''
+
+# get fai file of chr assembly
+rule initial_faidx_genome:
+    input:
+        'asm/' + ASSEMBLY + '.chr.fa'
+    output:
+        'asm/' + ASSEMBLY + '.chr.fa.fai'
+    shell:
+        '''
+        samtools faidx {input}
+        '''
+
+# map wgs short reads to chrs assembly
+rule initial_map_wgs_short_reads:
+    input:
+        asm = 'asm/' + ASSEMBLY + '.chr.fa',
+        idx = 'asm/' + ASSEMBLY + '.chr.fa' + '.bwt',
+        fq1 = 'wgs_short/' + WGS_short[0],
+        fq2 = 'wgs_short/' + WGS_short[1]
+    output:
+        'wgs_align/sorted.bam'
+    params:
+        mem = initial_map_wgs_short_reads_samsortmem,
+        rg = read_align_rg
+    threads:
+        initial_map_wgs_short_reads_threads
+    shell:
+        '''
+        bwa mem -t {threads} -R {params.rg} {input.asm} {input.fq1} {input.fq2} | samtools sort -m {params.mem} -@ {threads} -o {output} -O bam
+        '''
+
+# index bam
+rule initial_index_wgs_short_bam:
+    input:
+        'wgs_align/sorted.bam'
+    output:
+        'wgs_align/sorted.bam.bai'
+    shell:
+        '''
+        samtools index {input}
+        '''
+
+# make the region file for freebayes-parallel
+rule initial_make_freebayes_region_file:
+    input:
+        fai = 'asm/' + ASSEMBLY + '.chr.fa.fai'
+    output:
+        'freebayes/freebayes_region_file'
+    params:
+        initial_make_freebayes_region_file_chunksize
+    shell:
+        '''
+        fasta_generate_regions.py {input.fai} {params} > {output}
+        '''
+
+# call variants based on sorted bam
+rule initial_call_variants:
+    input:
+        asm = 'asm/' + ASSEMBLY + '.chr.fa',
+        bam = 'wgs_align/sorted.bam',
+        idx = 'wgs_align/sorted.bam.bai',
+        region_file = 'freebayes/freebayes_region_file'
+    output:
+        'freebayes_vcf/var.vcf'
+    threads:
+        initial_call_variants_cpus
+    shell:
+        '''
+        freebayes-parallel {input.region_file} {threads} -f {input.asm} {input.bam} > {output}
+        '''
+
+# filter vcf based on QV and depth
+rule initial_vcf_filter:
+    input:
+        'freebayes_vcf/var.vcf'
+    output:
+        'freebayes_vcf/var_filtered_heterozygous_biallelic_SNPs.vcf'
+    params:
+        initial_vcf_filter_expression
+    shell:
+        '''
+        bcftools filter -i {params} {input} | bcftools view -g het -v snps -m2 -M2 > {output}
+        '''
+
+# compress the filtered vcf
+rule initial_vcf_compress:
+    input:
+        'freebayes_vcf/var_filtered_heterozygous_biallelic_SNPs.vcf'
+    output:
+        'freebayes_vcf/var_filtered_heterozygous_biallelic_SNPs.vcf.gz'
+    shell:
+        '''
+        bgzip -c {input} > {output}
+        '''
+
+# index the compressed filtered vcf
+rule initial_vcf_index:
+    input:
+        'freebayes_vcf/var_filtered_heterozygous_biallelic_SNPs.vcf.gz'
+    output:
+        'freebayes_vcf/var_filtered_heterozygous_biallelic_SNPs.vcf.gz.csi'
+    shell:
+        '''
+        bcftools index {input}
+        '''
+
+# split reheadered vcf to each chr for hapcut2 
+rule initial_split_vcf:
+    input:
+        vcf = 'freebayes_vcf/var_filtered_heterozygous_biallelic_SNPs.vcf.gz',
+        idx = 'freebayes_vcf/var_filtered_heterozygous_biallelic_SNPs.vcf.gz.csi'
+    output:
+        'freebayes_split/{chr}.vcf'
+    params:
+        chr = '{chr}'
+    shell:
+        '''
+        bcftools view {input.vcf} -r {params.chr} > {output}
+        '''
+
+################################################################################
+# hapcut2 steps
+# map Hi-C each fastq file to chrs assembly using bwa mem with -5SPM
+# index the bam file using samtools index
+# split bam to each chr using samtools view
+# then extrachair based on the chr bam filr from last step and vcf file from initial_split_vcf
+# finally run hapcut2 to assemble chromosome-level haplotype based on the Hi-C link
+
+# align HiC fastq file to chrs
+rule hapcut2_align_fastq:
+    input:  
+        asm = 'asm/' + ASSEMBLY + '.chr.fa',
+        idx = 'asm/' + ASSEMBLY + '.chr.fa' + '.bwt',
+        fq1 = 'hic/' + HIC[0],
+        fq2 = 'hic/' + HIC[1]
+    output: 
+        'hapcut2/align/hic.sorted.bam'
+    params: 
+        hapcut2_align_fastq_samsortmem
+    threads: 
+        hapcut2_align_fastq_threads
+    shell:
+        '''
+        bwa mem -t {threads} -5SPM {input.asm} {input.fq1} {input.fq2} | samtools sort -m {params} -@ {threads} -O bam -o {output} 
+        '''
+
+# remove duplicated reads 
+rule hapcut2_mark_duplicates:
+    input:  
+        'hapcut2/align/hic.sorted.bam'
+    output: 
+        bam = 'hapcut2/align_dedup/hic.sorted.deduped.bam',
+        metrics = 'hapcut2/align_dedup/hic.sorted.deduped.metrics'
+    params:
+        filehandl = hapcut2_mark_duplicates_maxfilehandle,
+        memory = hapcut2_mark_duplicates_javaXmx,
+        picard = PICARD
+    shell:
+        '''
+        java {params.memory} -jar {params.picard} MarkDuplicates --READ_NAME_REGEX null -I {input} -O {output.bam} -M {output.metrics} --ASSUME_SORTED true --REMOVE_DUPLICATES true -MAX_FILE_HANDLES {params.filehandl}
+        '''
+
+# index deduped bam so that bam can be split by samtools
+rule hapcut2_index_sorted_deduped_bam:
+    input:
+        'hapcut2/align_dedup/hic.sorted.deduped.bam'
+    output:
+        'hapcut2/align_dedup/hic.sorted.deduped.bam.bai'
+    shell:
+        '''
+        samtools index {input}
+        '''
+
+# split bam to each chr
+rule hapcut2_hic_split_bams:
+    input:  
+        bam = 'hapcut2/align_dedup/hic.sorted.deduped.bam',
+        idx = 'hapcut2/align_dedup/hic.sorted.deduped.bam.bai'
+    output: 
+        'hapcut2/split/{chr}.bam'
+    params:
+        chrs = '{chr}'
+    shell:
+        '''
+        samtools view -Sbh {input.bam} {params.chrs} > {output}  
+        '''
+
+# extract haplotype informative reads
+rule hapcut2_hic_extract_hairs:
+    input: 
+        bam = 'hapcut2/split/{chr}.bam',
+        vcf = 'freebayes_split/{chr}.vcf'
+    output: 
+        frag = 'hapcut2/extracthairs/frag/{chr}'
+    params:
+        insert_size = hapcut2_hic_extract_hairs_insertsize
+    shell:
+        '''
+        extractHAIRS --HiC 1 --bam {input.bam} --VCF {input.vcf} --out {output.frag} --maxIS {params.insert_size}
+        '''
+
+# run HapCUT2 to assemble haplotypes from Hi-C 
+rule hapcut2_run_hapcut2_hic:
+    input:  
+        frag = 'hapcut2/extracthairs/frag/{chr}',
+        vcf = 'freebayes_split/{chr}.vcf'
+    output: 
+        hap = 'hapcut2/vcf/{chr}.hap',
+        vcf_phased = 'hapcut2/vcf/{chr}.hap.phased.VCF'
+    params:
+        insert_size = hapcut2_hic_extract_hairs_insertsize
+    shell:
+        '''
+        hapcut2 --fragments {input.frag} --vcf {input.vcf} --output {output.hap} --outvcf 1 --hic 1 --hmw {params.insert_size}
+        '''
+
+# extract phased SNPs from hapcut2 output vcf
+rule hapcut2_extract_phased_snps:
+    input:
+        hap = expand('hapcut2/vcf/{chr}.hap', chr = chrs_list),
+        vcf = 'hapcut2/vcf/{chr}.hap.phased.VCF'
+    output:
+        'hapcut2/vcf_extract/{chr}.hap.phased.extracted.vcf'
+    shell:
+        '''
+        bcftools view -p {input.vcf} > {output}
+        '''
+
+# concatenate all extracted phased vcf into one vcf
+rule hapcut2_concatenate_phased_vcf:
+    input:
+        expand('hapcut2/vcf_extract/{chr}.hap.phased.extracted.vcf', chr = chrs_list)
+    output:
+        'hapcut2/vcf_concatenate/hapcut2.concatenated.phased.vcf'
+    shell:
+        '''
+        bcftools concat {input} > {output}
+        '''
+
+# get some statistics of the hapcut2 phased vcf
+rule hapcut2_phased_vcf_stats:
+    input:
+        'hapcut2/vcf_concatenate/hapcut2.concatenated.phased.vcf'
+    output:
+        gtf = 'hapcut2/vcf_concatenate/hapcut2.concatenated.phased.gtf',
+        stats = 'hapcut2/vcf_concatenate/hapcut2.concatenated.phased.stats.tsv',
+        block_list = 'hapcut2/vcf_concatenate/hapcut2.concatenated.phased.block.list'
+    shell:
+        '''
+        whatshap stats --gtf {output.gtf} --block-list {output.block_list} --tsv {output.stats} {input}
+        '''
+
+# get the largest phase block
+rule hapcut2_get_the_largest_phase_block:
+    input:
+        block_list = 'hapcut2/vcf_concatenate/hapcut2.concatenated.phased.block.list',
+        vcf = 'hapcut2/vcf_extract/{chr}.hap.phased.extracted.vcf'
+    output:
+        'hapcut2/vcf_extract/{chr}.hap.phased.largest.vcf'
+    params:
+        chrs = '{chr}'
+    shell:
+        '''
+        bcftools view -i "PS=$(sort -k 6 -nr {input.block_list} | grep {params.chrs} | cut -f3 | head -n 1)" {input.vcf} > {output}
+        '''
+
+################################################################################
+# whatshap steps
+# align ONT/PacBio long reads to chrs assembly using winnowmap as it aligns better 
+# index the bam file from winnowmap using samtools index
+# phase variants based on long-read bam + hapcut2 sparse haplotype using whatshap phase
+# get statistics of phasing results using whatshap stats
+# need to index the phased vcf from whatshap phase
+# tag reads based on phased snps using whatshap tag
+# extract hap1, hap2, untagged and unmapped reads based on the tag results
+
+# build the k-mer database for winnowmap
+rule whatshap_winnowmap_count_kmer:
+    input:
+        'asm/' + ASSEMBLY + '.chr.fa'
+    output:
+        directory('merylDB')
+    shell:
+        '''
+        meryl count k=15 output {output} {input}
+        '''
+
+# select k-mers
+rule whatshap_winnowmap_select_kmer:
+    input:
+        'merylDB'
+    output:
+        "repetitive_k15.txt"
+    shell:
+        '''
+        meryl print greater-than distinct=0.998 {input} > {output}
+        '''
+
+# map ont/pacbio long reads to the chrs assembly
+rule whatshap_winnowmap_map_long:
+    input:
+        asm = 'asm/' + ASSEMBLY + '.chr.fa',
+        longread = 'wgs_long/' + WGS_long,
+        repeat = "repetitive_k15.txt"
+    output:
+        'winnowmap/long_read_sorted.bam'
+    threads: 
+        whatshap_winnowmap_map_long_threads
+    params:
+        rg = read_align_rg,
+        mp = whatshap_winnowmap_map_long_map_preset,
+        mem = whatshap_winnowmap_map_long_samsortmem
+    shell:
+        '''
+        winnowmap -W {input.repeat} -t {threads} -R {params.rg} -ax {params.mp} {input.asm} {input.longread} | samtools sort -@ {threads} -m {params.mem} - > {output}
+        '''
+
+# index bam
+rule whatshap_index_bam:
+    input:
+        'winnowmap/long_read_sorted.bam'
+    output:
+        'winnowmap/long_read_sorted.bam.bai'
+    shell:
+        '''
+        samtools index {input}
+        '''
+
+# phase variants
+rule whatshap_phase:
+    input:
+        asm = 'asm/' + ASSEMBLY + '.chr.fa',
+        faidx = 'asm/' + ASSEMBLY + '.chr.fa.fai',
+        bam = 'winnowmap/long_read_sorted.bam',
+        idx = 'winnowmap/long_read_sorted.bam.bai',
+        vcf_hapcut2_phased = 'hapcut2/vcf_extract/{chr}.hap.phased.largest.vcf',
+        vcf_unphased_chr = 'freebayes_split/{chr}.vcf'
+    output:
+        'whatshap_phase/whatshap_long_read_hic_phased_{chr}.vcf'
+    params:
+        sample = SAMPLE,
+        chromosome = '{chr}'
+    shell:
+        '''
+        whatshap phase --sample {params.sample} -o {output} --reference {input.asm} --chromosome {params.chromosome} {input.vcf_unphased_chr} {input.bam} {input.vcf_hapcut2_phased}
+        '''
+
+# concatenate chr vcf to one vcf
+rule whatshap_cat_phased_vcf:
+    input:
+        vcf = expand('whatshap_phase/whatshap_long_read_hic_phased_{chr}.vcf', chr = chrs_list)
+    output:
+        'whatshap_phase/whatshap_long_read_hic_phased.vcf.gz'
+    shell:
+        '''
+        bcftools concat -Oz -o {output} {input} 
+        '''
+
+# index the concatenated phased vcf
+rule whatshap_index_cat_phased_vcf:
+    input:
+        'whatshap_phase/whatshap_long_read_hic_phased.vcf.gz'
+    output:
+        'whatshap_phase/whatshap_long_read_hic_phased.vcf.gz.tbi'
+    shell:
+        '''
+        tabix -p vcf {input}
+        '''
+
+# get statistics of the phasing results
+rule whatshap_stats:
+    input:
+        idx = 'whatshap_phase/whatshap_long_read_hic_phased.vcf.gz.tbi',
+        vcf = 'whatshap_phase/whatshap_long_read_hic_phased.vcf.gz'   
+    output:
+        gtf = 'whatshap_stats/phased.gtf',
+        block_list = 'whatshap_stats/phased.list',
+        stats = 'whatshap_stats/phased_stats.tsv'
+    shell:
+        '''
+        whatshap stats --gtf {output.gtf} --block-list {output.block_list} --tsv {output.stats} {input.vcf}
+        '''
+
+# tag reads based on phased variants
+# maybe split this job to chrs to save time
+rule whatshap_haplotag:
+    input:
+        stats = 'whatshap_stats/phased_stats.tsv',
+        asm = 'asm/' + ASSEMBLY + '.chr.fa',
+        vcf = 'whatshap_phase/whatshap_long_read_hic_phased.vcf.gz',
+        idx = 'whatshap_phase/whatshap_long_read_hic_phased.vcf.gz.tbi',
+        bam = 'winnowmap/long_read_sorted.bam'
+    output:
+        bam = 'whatshap_haplotag/{chr}_long_read_sorted_tagged.bam',
+        read_list = 'whatshap_haplotag/{chr}_tagged_reads.list'
+    params:
+        sample = whatshap_haplotag_sample,
+        chromosome = '{chr}'
+    threads:
+        whatshap_haplotag_threads
+    shell:
+        '''
+        whatshap haplotag --reference {input.asm} --sample {params.sample} --regions {params.chromosome} --output-haplotag-list {output.read_list} {input.vcf} {input.bam} | samtools view -Sbh -@ {threads} > {output.bam}
+        '''
+
+# concatenate read list
+rule whatshap_cat_readlist:
+    input:
+        expand('whatshap_haplotag/{chr}_tagged_reads.list', chr = chrs_list)
+    output:
+        'whatshap_haplotag/tagged_reads.list'
+    shell:
+        '''
+        cat {input} > {output}
+        '''
+
+# extract read names for each group
+rule whatshap_extract_read_names:
+    input:
+        'whatshap_haplotag/tagged_reads.list'
+    output:
+        'whatshap_phased_read_list/{group}.list'
+    params:
+        group = '{group}'
+    shell:
+        '''
+        grep {params.group} {input} | cut -f1 > {output}
+        '''
+
+# extract all read names
+# Used this commnad before
+# zcat {input.longread} | awk 'NR%4==1 {{print}}' | cut -f1 -d" " | sed 's/@//' > {output}
+# now change to seqkit
+rule whatshap_get_all_read_names:
+    input:
+        longread = 'wgs_long/' + WGS_long
+    output:
+        'whatshap_phased_read_list/all.list'
+    shell:
+        '''
+        seqkit seq -n -i {input.longread} > {output}
+        ''' 
+
+# find unmapped reads
+rule whatshap_find_unmapped_reads:
+    input:
+        'whatshap_phased_read_list/all.list',
+        expand('whatshap_phased_read_list/{group}.list', group = ['H1', 'H2', 'none'])
+    output:
+        'whatshap_phased_read_list/unmapped.list'
+    shell:
+        '''
+        python Find_unmapped_read.py
+        '''
+
+# extract reads
+rule whatshap_extract_reads:
+    input:
+        name_list = 'whatshap_phased_read_list/{read}.list',
+        longread = 'wgs_long/' + WGS_long
+    output:
+        'whatshap_phased_read_fastq/{read}.fq.gz'
+    threads:
+        whatshap_extract_reads_threads
+    shell:
+        '''
+        seqkit grep -f {input.name_list} {input.longread} -j {threads} -o {output}
+        '''
+
+# get statistics of binned reads
+rule whatshap_binned_reads_stats:
+    input:
+        read = expand('whatshap_phased_read_fastq/{read}.fq.gz', read = ['H1', 'H2', 'none', 'unmapped']),
+        all = 'wgs_long/' + WGS_long
+    output:
+        'whatshap_phased_read_fastq/binned_reads.stats'
+    shell:
+        '''
+        seqkit stats -a -b -T {input.all} {input.read} > {output}
+        '''
+
+
