@@ -1,0 +1,285 @@
+# Sort unitigs to different haplotypes with haplotye-specific k-mers 
+
+# author: Yutang Chen,  MPB, ETH Zurich
+
+# 28.06.2023
+
+################################################################################
+########### start setting parameters, please edit the parameters below #########
+########### for parameters with comment, no edit, leave them unchanged #########
+################################################################################
+
+# input files 
+# the phased vcf file from DipGrass, this file should be copied to folder phase
+phased_vcf = 'whatshap_long_read_hic_phased.vcf.gz'
+
+# the index file of the phased vcf, copy to the phase folder
+phased_vcf_idx = 'whatshap_long_read_hic_phased.vcf.gz.tbi' # index file of the vcf
+
+# name of the pseudo-chromosomes of the unphased haploid assembly, 
+# this file can be found in the dip_grass/asm folder, copy to asm folder here
+assembly = 'sample.fasta.chr.fa' 
+
+# name of the unitig file, copy to the seq folder
+sequence = 'sample.p_utg.fasta'
+
+# sample name
+SAMPLE = 'sikem'
+
+# kmc params
+# k-mer size, I used 21, no edit
+kmer_size = 21
+
+# the input file format for kmc, here it is multiple fasta, no edit
+input_format = 'm'
+
+# threads for k-mer counting, change accordingly
+counting_threads = 20
+
+# amount of RAM in GB for kmc k-mer counting, change according to the resouce you have 
+memory = '100'
+
+#
+# path to the classify_by_kmers.py
+class_seq_by_kmer = './classify_by_kmers.py'
+
+# define haplotype, no edit
+hap = [1, 2]
+
+# split seq params
+# split the unitig fasta file to small chunks for binning in parallel
+# the value should be lower than 100
+number_of_chunks = 48
+
+# the number of threads used for spliting the read file
+chop_seq_threads = 48
+
+# the unitig file after spliting, no edit.
+chop_file_name = 'chunk/chunk_{chunk}.fasta'
+
+# extract seq params
+# the binned files, no edit
+extract_seq_output = 'binned_seq/{group}.fasta' 
+
+# number of threads used to extract reads, change accordingly
+extract_seq_threads = 15
+
+################################################################################
+########### end setting parameters #############################################
+################################################################################
+
+################################################################################
+####### below is the snakemkae pipeline, please don't edit lines below #########
+################################################################################
+
+rule all:
+	input:
+		h1 = 'hap/' + SAMPLE + '_h1.fasta.gz',
+		h2 = 'hap/' + SAMPLE + '_h2.fasta.gz'
+
+###############################################################################
+# get consensus asm based on the phased vcf
+rule get_consensus:
+	input:
+		vcf = 'phase/' + phased_vcf,
+		idx = 'phase/' + phased_vcf_idx,
+		asm = 'asm/' + assembly
+	output:
+		'consensus/{haplotype}.fa'
+	params:
+		hap = '{haplotype}'
+	shell:
+		'''
+		bcftools consensus -H {params.hap} -f {input.asm} {input.vcf} > {output}
+		'''
+
+# make tmp directory for each hap
+rule mkdir_tmp:
+	input:
+		'consensus/{haplotype}.fa'
+	output:
+		directory('tmp_{haplotype}')
+	params:
+		tmp = 'tmp_{haplotype}'
+	shell:
+		'''
+		mkdir {params}
+		'''
+
+# get kmers from each haplotype using kmc
+rule get_kmer:
+	input:
+		hap = 'consensus/{haplotype}.fa',
+		tmp = 'tmp_{haplotype}'
+	output:
+		pre = '{haplotype}.kmc_pre',
+		suf = '{haplotype}.kmc_suf',
+	params:
+		ks = kmer_size,
+		format = input_format,
+		mem = memory,
+		name = '{haplotype}',
+	threads:
+		counting_threads
+	shell:
+		'''
+		kmc -k{params.ks} -m{params.mem} -f{params.format} -b -t{threads} -ci1 -cx1 {input.hap} {params.name} {input.tmp}
+		'''
+
+# get hapA-specific kmers using kmc_tools simple kmers_subtract
+rule get_hapA_specific_kmer:
+	input:
+		hapA_pre = expand('{haplotype}.kmc_pre', haplotype = hap[0]),
+		hapA_suf = expand('{haplotype}.kmc_suf', haplotype = hap[0]),
+		hapB_pre = expand('{haplotype}.kmc_pre', haplotype = hap[1]),
+		hapB_suf = expand('{haplotype}.kmc_suf', haplotype = hap[1])
+	output:
+		hapAS_pre = 'AS.kmc_pre',
+		hapAS_suf = 'AS.kmc_suf'
+	threads:
+		counting_threads
+	shell:
+		'''
+		kmc_tools -t{threads} simple 1 2 kmers_subtract AS 
+		'''
+
+# get hapB-specific kmers using kmc_tools simple reverse_kmers_subtract
+rule get_hapB_specific_kmer:
+	input:
+		hapA_pre = expand('{haplotype}.kmc_pre', haplotype = hap[0]),
+		hapA_suf = expand('{haplotype}.kmc_suf', haplotype = hap[0]),
+		hapB_pre = expand('{haplotype}.kmc_pre', haplotype = hap[1]),
+		hapB_suf = expand('{haplotype}.kmc_suf', haplotype = hap[1])
+	output:
+		hapBS_pre = 'BS.kmc_pre',
+		hapBS_suf = 'BS.kmc_suf'
+	threads:
+		counting_threads
+	shell:
+		'''
+		kmc_tools -t{threads} simple 1 2 reverse_kmers_subtract BS 
+		'''
+
+# dump hap-specific kmers using kmc_tools transform dump
+rule dump_hapA_specific_kmer:
+	input:
+		hapAS_pre = 'AS.kmc_pre',
+		hapAS_suf = 'AS.kmc_suf'
+	output:
+		'AS_dump.txt'
+	threads:
+		counting_threads
+	shell:
+		'''
+		kmc_tools -t{threads} transform AS dump {output}
+		'''
+
+# dump hap-specific kmers using kmc_tools transform dump
+rule dump_hapB_specific_kmer:
+	input:
+		hapBS_pre = 'BS.kmc_pre',
+		hapBS_suf = 'BS.kmc_suf'
+	output:
+		'BS_dump.txt'
+	threads:
+		counting_threads
+	shell:
+		'''
+		kmc_tools -t{threads} transform BS dump {output}
+		'''
+
+# chop read file to several chunks to do binning in parallel
+rule chop_seq:
+	input:
+		seq = 'seq/' + sequence 
+	output:
+		'chop_seq.success'
+	params:
+		nchunk = number_of_chunks
+	threads:
+		chop_seq_threads
+	shell:
+		'''
+		seqkit split2 -p {params.nchunk} -O chunk --by-part-prefix chunk_ -j {threads} {input} && touch {output} 
+		'''
+
+# now bin unitigs/phased contigs to different haplotypes
+rule bin_seq_with_hap_specific_kmer:
+	input:
+		AS = 'AS_dump.txt',
+		BS = 'BS_dump.txt',
+		chunk = 'chop_seq.success'
+	output:
+		'chunk_list/trio_binning_{chunk}.txt'
+	params:
+		pyscript = class_seq_by_kmer,
+		seq = chop_file_name
+	shell:
+		'''
+		python {params.pyscript} {params.seq} {input.AS} {input.BS} | tee {output}
+		'''
+
+# concatenate each group
+rule concatenate_chunk:
+	input:
+		expand('chunk_list/trio_binning_{chunk}.txt', chunk = ['{0:03}'.format(i) for i in range(1, number_of_chunks + 1)])
+	output:
+		'chunk_all/trio_binning_all.txt'
+	shell:
+		'''
+		cat {input} > {output}
+		'''
+
+# extract seq names for each group
+rule extract_seq_names:
+    input:
+        'chunk_all/trio_binning_all.txt'
+    output:
+        'chunk_group/trio_binning_{group}.txt'
+    params:
+        group = '{group}'
+    shell:
+        '''
+        grep {params.group} {input} | cut -f1 > {output}
+        '''
+
+# extract seq
+rule extract_seq:
+    input:
+        name_list = 'chunk_group/trio_binning_{group}.txt',
+        seq = 'seq/' + sequence
+    output:
+        extract_seq_output
+    threads:
+        extract_seq_threads
+    shell:
+        '''
+        seqkit grep -f {input.name_list} {input.seq} -j {threads} -o {output}
+        '''
+
+# get statistics of binned reads
+rule binned_seq_stats:
+    input:
+        bins = expand(extract_seq_output, group = ['A', 'B', 'U']),
+        seq = 'seq/' + sequence
+    output:
+        'binned_seq/binned_seq.stats'
+    shell:
+        '''
+        seqkit stats -a -b -T {input.seq} {input.bins} > {output}
+        '''
+
+# to make hap 1 and hap2 read bins, hap1 = A + U, hap2 = B + U
+rule get_hap_reads:
+	input:
+		stats = 'binned_seq/binned_seq.stats',
+		A = expand(extract_seq_output, group = ['A']),
+		B = expand(extract_seq_output, group = ['B']),
+		U = expand(extract_seq_output, group = ['U'])
+	output:
+		h1 = 'hap/' + SAMPLE + '_h1.fasta.gz',
+		h2 = 'hap/' + SAMPLE + '_h2.fasta.gz'
+	shell:
+		'''
+		cat {input.A} {input.U} > {output.h1} && cat {input.B} {input.U} > {output.h2}
+		'''
