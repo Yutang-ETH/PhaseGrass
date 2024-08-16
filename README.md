@@ -35,6 +35,6 @@ Step 6: final scaffolding and manual curation. ScaffoldGrass scaffolds the two O
 I would like to sincerely thank authors of all the open-source programs and software used in PhaseGrass.
 
 ## Help and collaboration
-For further questions, comments and suggestions, please use the issue page.
+For further questions, comments and suggestions regarding PhaseGrass, please use the issue page.
 
 For potential collaboration, please contact [Yutang Chen](https://usys.ethz.ch/en/people/profile.MjgzMjE5.TGlzdC82MzcsMzIwMTk3MjIy.html), cc [Bruno Studer](https://usys.ethz.ch/en/people/profile.bruno-studer.html), the group leader of Molecular Plant Breeding at ETH Zurich.
