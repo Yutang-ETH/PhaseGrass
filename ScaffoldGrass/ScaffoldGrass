@@ -1,0 +1,222 @@
+# scaffold haplotype assemblies (haplomes) to chromosomes
+
+# author: Yutang Chen,  MPB, ETH Zurich
+
+
+################################################################################
+###### start setting parameters, edit below parameters #########################
+###### for those with a comment, no edit, you don't need to edit ############### 
+################################################################################
+# should make some folders before running the pipeline, mkdir asm hap hic
+
+# specify input data
+# specify sample name
+SAMPLE = 'sample'
+
+# specify haplotype, no edit
+# h1 and h2 should be present in the haplotype assembly name 
+hap = ['h1', 'h2']
+
+# the name of the unphased haploid assembly
+ref = 'sample.unphased.fasta.chr.fa'
+
+# Hi-C data, should be named exactly as below, no edit
+HIC = ['Hic_reads_R1.fastq.gz', 'Hic_reads_R2.fastq.gz']
+
+# ragtag scaffold parameters, please refer to ragtag github help page
+# number of threads for mapping haplome to the unphased haploid assembly 
+minimap2_threads = 30
+
+# minimpa2 parameters used in ragtag2, -t 30 would overwrite the number of threads set above
+# use the proper map presetting, -x asm5 is suggested. 
+# -f 0.02 filters 0.02% most frequent minimizers, increase this value speeds up the mapping, but compromises mapping
+# probably just delete this -f parameter for the first attempt 
+minimap2_parameters = "'-x asm20 -t 30 -f 0.02'"
+
+# path to your minimap2
+minimap2_path = '/home/yutachen/anaconda3/envs/ragtag/bin/minimap2'
+
+# minimum length to be inlcuded for anchoring, 50 kb suggested 
+ragtag_filter_length = 50000
+
+# corresponds to the -i parameter, grouping cofidence, no edit
+# please read ragtag publicaiton, if you really want to play with it
+# 0.2 is the default, I found it is fine
+group_confidence = 0.2
+
+# YaHS parameters, please refere to YaHS github help page
+# samtools sort -m value, 1G or lower is suggested. Edit accorting to your resources
+YaHS_align_hic_fastq_mem = '2G'
+
+# number of threads used for Hi-C reads mapping
+YaHS_align_hic_fastq_threads = 60
+
+# Hi-C mapping quality, >0 is suggested
+YaHS_hic_scaffolding_mp = 10
+
+# corresponds to yahs -r options, a range of resolution in ascending order
+# I suggest start with 50 kb and don't go much higher, say, stop at 1Mb or 10 Mb
+YaHS_hic_scaffolding_r = '50000,100000,200000,500000,1000000'
+
+# the enzyme recogonition site
+YaHS_hic_scaffolding_e = 'GATC'
+
+# minimum contig length to be included in Hi-C scaffolding, 0 means no filtering
+YaHS_hic_scaffolding_l = 0
+
+################################################################################
+####################### end setting parameters #################################
+################################################################################
+
+################################################################################
+###### below is the snakemake pipeline, please don't eidt anything below #######
+################################################################################
+################################################################################
+rule all:
+	input:
+		'dip/' + SAMPLE + '_dip.fasta'
+
+################################################################################
+# YaHS steps
+# scaffold contigs to chromosoes using YaHS with the agp file from ragtag and Hi-C data
+# map Hi-C to contigs using the arima hic mapping pipeline
+# do YaHS
+
+# index hap assembly
+rule YaHS_index_genome:
+    input:  
+        'hap/' + SAMPLE + '_' + '{haplotype}' + '.fasta'
+    output: 
+        'hap/' + SAMPLE + '_' + '{haplotype}' + '.fasta' + '.bwt'
+    shell:
+        '''
+        bwa index {input}
+        '''
+
+# align HiC fastq file to chrs
+rule YaHS_align_hic_fastq:
+    input:  
+        asm = 'hap/' + SAMPLE + '_' + '{haplotype}' + '.fasta',
+        idx = 'hap/' + SAMPLE + '_' + '{haplotype}' + '.fasta' + '.bwt',
+        fq1 = 'hic/' + HIC[0],
+        fq2 = 'hic/' + HIC[1]
+    output: 
+        'yahs_align/{haplotype}.deduped.bam'
+    params: 
+        mem = YaHS_align_hic_fastq_mem,
+        rg = '@RG\\\\tID:{haplotype}\\\\tSM:{haplotype}'  
+    threads: 
+        YaHS_align_hic_fastq_threads
+    shell:
+        '''
+        bwa mem -t {threads} -5SPM -R {params.rg} {input.asm} {input.fq1} {input.fq2} | samblaster -M -r | samtools view -Sb - > {output}
+        '''
+
+# sort the bam by read name again
+rule sort_bam_by_readname:
+	input:
+		bam = 'yahs_align/{haplotype}.deduped.bam'
+	output:
+		'yahs_align/{haplotype}.n.sorted.deduped.bam'
+	params:
+		mem = YaHS_align_hic_fastq_mem
+	threads:
+	 	YaHS_align_hic_fastq_threads
+	shell:
+		'''
+		samtools sort -m {params.mem} -@ {threads} -O bam -n -o {output} {input.bam} # sort by read name
+		'''
+
+# get the fai file of the hap assembly as YaHS requires it
+rule YaHS_faidx_hap:
+	input:
+		'hap/' + SAMPLE + '_' + '{haplotype}' + '.fasta'
+	output:
+		'hap/' + SAMPLE + '_' + '{haplotype}' + '.fasta.fai'
+	shell:
+		'''
+		samtools faidx {input}
+		'''
+
+# now start YaHS hic scaffolding
+rule YaHS_hic_scaffolding:
+	input:
+		asm = 'hap/' + SAMPLE + '_' + '{haplotype}' + '.fasta',
+		idx = 'hap/' + SAMPLE + '_' + '{haplotype}' + '.fasta.fai',
+		bam = 'yahs_align/{haplotype}.n.sorted.deduped.bam'
+	output:
+		fasta = 'yahs_scaffold/{haplotype}/' + SAMPLE + '_' + '{haplotype}_scaffolds_final.fa',
+		agp = 'yahs_scaffold/{haplotype}/' + SAMPLE + '_' + '{haplotype}_scaffolds_final.agp'
+	params:
+		output_prefix = 'yahs_scaffold/{haplotype}/' + SAMPLE + '_' + '{haplotype}',
+		mq = YaHS_hic_scaffolding_mp,
+		resolution = YaHS_hic_scaffolding_r,
+		site = YaHS_hic_scaffolding_e,
+		length = YaHS_hic_scaffolding_l
+	shell:
+		'''
+		yahs -o {params.output_prefix} --no-mem-check -r {params.resolution} -e {params.site} -q {params.mq} -l {params.length} {input.asm} {input.bam}
+		'''
+
+################################################################################
+# ragtag steps
+# scaffold yahs scaffolds to chromosomes using ragtag with minimap2
+# filter short scaffolds from YaHS
+
+# filter short scaffolds
+rule ragtag_filter:
+	input:
+		scaffolds = 'yahs_scaffold/{haplotype}/' + SAMPLE + '_' + '{haplotype}_scaffolds_final.fa'
+	output:
+		'yahs_scaffold/{haplotype}/' + SAMPLE + '_' + '{haplotype}_short.list'
+	params:
+		max_length = ragtag_filter_length
+	shell:
+		'''
+		seqkit seq -n -i -M {params.max_length} {input} > {output}
+		'''
+
+# ragtag
+rule ragtag_scaffolding:
+	input:
+		ref = 'asm/' + ref,
+		scaffolds = 'yahs_scaffold/{haplotype}/' + SAMPLE + '_' + '{haplotype}_scaffolds_final.fa',
+		skip_list = 'yahs_scaffold/{haplotype}/' + SAMPLE + '_' + '{haplotype}_short.list'
+	output:
+		fasta = 'ragtag_{haplotype}/ragtag.scaffold.fasta'
+	params:
+		output = 'ragtag_{haplotype}',
+		myminimap = minimap2_path,
+		mm2 = minimap2_parameters,
+		mgf = group_confidence
+	threads:
+		minimap2_threads
+	shell:
+		'''
+		ragtag.py scaffold -t {threads} -j {input.skip_list} -u --mm2-params {params.mm2} -i {params.mgf} --aligner {params.myminimap} -o {params.output} {input.ref} {input.scaffolds}
+		'''
+
+################################################################################
+# change the header of each haplotype and concatenate them as one assembly
+
+# change header in fasta
+rule change_hap_fasta_header:
+	input:
+		fasta = 'ragtag_{haplotype}/ragtag.scaffold.fasta'
+	output:
+		fasta_renamed = 'ragtag_{haplotype}/ragtag.scaffold.renamed.fasta'
+	shell:
+		'''
+		sed 's/RagTag/{wildcards.haplotype}/' {input} > {output}
+		'''
+
+# now concatenate the both haplotypes into one diploid fasta
+rule concatenate_haplotype:
+	input:
+		 expand('ragtag_{haplotype}/ragtag.scaffold.renamed.fasta', haplotype = hap)
+	output:
+		'dip/' + SAMPLE + '_dip.fasta'
+	shell:
+		'''
+		cat {input} > {output}
+		'''
