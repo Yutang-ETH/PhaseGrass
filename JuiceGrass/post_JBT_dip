@@ -1,0 +1,130 @@
+# generate new fasta file with the edited Hi-C contact map after manual curation
+
+# author: Yutang Chen,  MPB, ETH Zurich
+
+################################################################################
+###### start setting parameters, edit below parameters #########################
+###### for those with a comment, no edit, you don't need to edit ############### 
+################################################################################
+
+# user configuration
+# the name of the diploid assembly
+ASM = 'sample_dip.fasta'
+
+# just give a name for the wrapped diploid assembly
+ASM_wrapped = 'sample_dip_wrapped.fasta'
+
+# the edited Hi-C matrix .assembly file
+reviewed_assembly = 'sample.review.assembly'
+
+# name of the final diploid fasta after correction
+FINAL_fasta = 'sample_dip_wrapped.FINAL.fasta'
+
+# the size threshold to separate chr and unplaced small scaffolds
+# should be an estimate value between the smalles chr and the largest unplaced seq
+# 
+scaffold_size_threshold = 100000000  
+
+# chromosome number threshold, should be haploid genome chr number
+chromosome_number_threshold = 7
+
+# path to the 3d-dna scripts
+wrap_fasta_script = '/scratch/yutang/juicer/3d-dna/utils/wrap-fasta-sequence.awk'
+post_review_script = '/scratch/yutang/juicer/3d-dna/run-asm-pipeline-post-review.sh'
+generate_cprops_script = '/scratch/yutang/juicer/3d-dna/utils/generate-cprops-file.awk'
+
+################################################################################
+
+rule all:
+    input:
+        'h1.FINAL.fasta',
+        'h2.FINAL.fasta'
+
+
+################################################################################
+# first wrap the original fasta
+rule wrap_original_fasta:
+    input:
+        'references/' + ASM 
+    output:
+        'references/' + ASM_wrapped
+    params:
+        wrap_fasta = wrap_fasta_script
+    shell:
+        '''
+        awk -f {params.wrap_fasta} {input} > {output}
+        '''
+
+# now do the post review script
+rule post_review_pipeline:
+    input:
+        assembly = reviewed_assembly,
+        wrapped_fasta = 'references/' + ASM_wrapped,
+        mnd = 'aligned/merged_nodups.txt'
+    output:
+        fasta = FINAL_fasta,
+        success = 'post_review.success'
+    params:
+        post_review = post_review_script
+    shell:
+        '''
+        {params.post_review} -g 100 -r {input.assembly} {input.wrapped_fasta} {input.mnd} && touch post_review.success
+        '''
+
+# get the FINAL cprops file
+rule get_chromosomes:
+    input:
+        fasta = FINAL_fasta,
+        success = 'post_review.success'
+    output:
+        'FINAL.cprops'
+    params:
+        generate_cprops = generate_cprops_script
+    shell:
+        '''
+        awk -f {params.generate_cprops} {input.fasta} > {output}
+        '''
+
+# get hap2 scaffold header list
+rule get_hap_chr_header:
+    input:
+        'FINAL.cprops'
+    output:
+        'hap2.lst'
+    params:
+        size_threshold = scaffold_size_threshold,
+        chr_threshold = chromosome_number_threshold + 1
+    shell:
+        '''
+        grep $(awk '{{ if($3 > {params.size_threshold}) {{ print $1 }} }}' {input} | head -n {params.chr_threshold} | tail -n 1) -A $(cat {input} | wc -l) {input} | cut -f1 -d' ' > {output}
+        '''
+
+# now extract hap1 scaffolds
+rule extract_hap1:
+    input:
+        header_lst = 'hap2.lst',
+        fasta = FINAL_fasta
+    output:
+        'h1.FINAL.fasta'
+    params:
+        chr_threshold = chromosome_number_threshold,
+        unplaced = chromosome_number_threshold + 1
+    shell:
+        '''
+        cat <(seqkit grep -v -f {input.header_lst} {input.fasta} | seqkit range -r 1:{params.chr_threshold} | seqkit replace -p HiC_scaffold_.* -r "chr{{nr}}_h1") <(seqkit grep -v -f {input.header_lst} {input.fasta} | seqkit range -r {params.unplaced}:-1 | seqkit replace -p HiC_scaffold_.* -r "unplaced{{nr}}_h1") > {output} 
+        '''
+
+# now extract hap2 scaffolds
+rule extract_hap2:
+    input:
+        header_lst = 'hap2.lst',
+        fasta = FINAL_fasta,
+    output:
+        'h2.FINAL.fasta'
+    params:
+        chr_threshold = chromosome_number_threshold,
+        unplaced = chromosome_number_threshold + 1
+    shell:
+        '''
+        cat <(seqkit grep -f {input.header_lst} {input.fasta} | seqkit range -r 1:{params.chr_threshold} | seqkit replace -p HiC_scaffold_.* -r "chr{{nr}}_h2") <(seqkit grep -f {input.header_lst} {input.fasta} | seqkit range -r {params.unplaced}:-1 | seqkit replace -p HiC_scaffold_.* -r "unplaced{{nr}}_h2") > {output} 
+        '''
