@@ -37,6 +37,9 @@ For detailed usage, please visit the [wiki](https://github.com/Yutang-ETH/PhaseG
 ## Acknowledgement
 I would like to sincerely thank authors of all the open-source programs and software used in PhaseGrass.
 
+## Citation
+TBD
+
 ## Help and collaboration
 For further questions, comments and suggestions regarding PhaseGrass, please use the [issue page](https://github.com/Yutang-ETH/PhaseGrass/issues).
 
