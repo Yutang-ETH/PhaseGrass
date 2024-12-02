@@ -1,0 +1,164 @@
+# build diploid hic contact map
+
+# author: Yutang Chen,  MPB, ETH Zurich
+
+################################################################################
+###### start setting parameters, edit below parameters #########################
+###### for those with a comment, no edit, you don't need to edit ############### 
+################################################################################
+
+# specify sample name
+SAMPLE = 'sample'
+
+# the name of enzyme used in HiC library prep
+ENZYME  = 'DpnII'
+
+# path to the current working directory
+cwd = '/scratch/yutang/juice_grass/xanthia' 
+
+# name of the assembly, this assembly should by put in the references folder
+ASM = 'sample_dip.fasta'
+
+# name of Hi-C reads, Hi-C reads should be named exactly as the following, no edit
+hic = ['Hic_reads_R1.fastq.gz', 'Hic_reads_R2.fastq.gz']
+
+# path to the juicer.sh script
+juicer_sh = '/scratch/yutang/juicer/scripts/juicer.sh'
+
+# path to the folder containing the juicer.sh script
+juicer_top = '/scratch/yutang/juicer'
+
+# the number of threads used for Hi-C read mapping
+map_threads = 48
+
+# Hi-C read mapping quality to included in the Hi-C contact map, >0 suggested
+hic_matrix_mapq = 1
+
+# path to the generate_site_positions.py
+generate_site = '/scratch/yutang/juicer/generate_site_positions.py'
+
+# path to the 3d-DNA scripts
+generate_assembly = '/scratch/yutang/juicer/3d-dna/utils/generate-assembly-file-from-fasta.awk'
+generate_hic = '/scratch/yutang/juicer/3d-dna/visualize/run-assembly-visualizer.sh'
+
+################################################################################
+####################### end setting parameters #################################
+################################################################################
+
+################################################################################
+###### below is the snakemake pipeline, please don't eidt anything below #######
+################################################################################
+################################################################################
+rule all:
+	input:
+		'build_hic.success'
+
+################################################################################
+# index the assembly
+rule index_scaffold:
+	input:
+		'references/' + ASM 
+	output:
+		'references/' + ASM + '.bwt'
+	shell:
+		'''
+		bwa index {input}
+		'''
+
+# in-silico digestion
+rule insilico_digestion:
+	input:
+		'references/' + ASM 
+	output:
+		SAMPLE + '_' + ENZYME + '.txt'
+	params:
+		generate_site_py = generate_site,
+		enzyme = ENZYME,
+		sample = SAMPLE
+	shell:
+		'''
+		python {params.generate_site_py} {params.enzyme} {params.sample} {input}
+		'''
+
+# move the digestion file to restriction_sites folder
+rule move_restriction_site_file:
+	input:
+		SAMPLE + '_' + ENZYME + '.txt'
+	output:
+		'restriction_sites/' + SAMPLE + '_' + ENZYME + '.txt'
+	shell:
+		'''
+		mv {input} {output}
+		'''
+
+# faidx scaffolds
+rule get_faidx:
+	input:
+		'references/' + ASM
+	output:
+		'references/' + ASM + '.fai'
+	shell:
+		'''
+		samtools faidx {input}
+		'''
+
+# get size
+rule get_size:
+	input:
+		'references/' + ASM + '.fai'
+	output:
+		'references/chrom.sizes'
+	shell:
+		'''
+		cut -f1,2 {input} > {output}
+		'''
+
+rule map_hic_with_juicer:
+	input:
+		idx = 'references/' + ASM + '.bwt',
+		ref = 'references/' + ASM,
+		chr_size = 'references/chrom.sizes',
+		restriction_sites = 'restriction_sites/' + SAMPLE + '_' + ENZYME + '.txt'
+	output:
+		'map_hic.success'
+	params:
+		juicer = juicer_sh,
+		ID = SAMPLE,
+		WD = cwd,
+		enzyme = ENZYME,
+		top = juicer_top
+	threads:
+		map_threads
+	shell:
+		'''
+		{params.juicer} -e --assembly -t {threads} -T {threads} -g {params.ID} -d {params.WD} -p {input.chr_size} -s {params.enzyme} -y {input.restriction_sites} -z {input.ref} -D {params.top} && touch map_hic.success
+		'''
+
+# create assembly file for JBT
+rule YaHS_create_assembly:
+	input:
+		'references/' + ASM
+	output:
+		SAMPLE + '.assembly'
+	params:
+		generate_assembly_script = generate_assembly
+	shell:
+		'''
+		awk -f {params.generate_assembly_script} {input} > {output}
+		'''
+
+# produce .hic
+rule build_hic:
+	input:
+		suc = 'map_hic.success',
+		assembly = SAMPLE + '.assembly'
+	output:
+		'build_hic.success'
+	params:
+		generate_hic_script = generate_hic,
+		align = 'aligned/merged_nodups.txt',
+		mapq = hic_matrix_mapq
+	shell:
+		'''
+		bash {params.generate_hic_script} -q {params.mapq} -c {input.assembly} {params.align} && touch build_hic.success
+		'''
