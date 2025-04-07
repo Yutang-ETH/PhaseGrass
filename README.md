@@ -18,7 +18,9 @@ Compared to other reference-based phasing methods ([DipAsm](https://github.com/s
 
 
 Fig. 1 | PhaseGrass workflow overview
-![phasegrass_workflow_new](https://github.com/Yutang-ETH/PhaseGrass/assets/84848653/c4c43412-66dc-4c9f-ab58-5b4330431206)
+![ILFPC_assembly_workflow_full_updated](https://github.com/user-attachments/assets/d908da7f-5f21-4f6e-9ae7-9e2ab10a2273)
+
+
 
 
 
