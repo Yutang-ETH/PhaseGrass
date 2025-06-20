@@ -20,6 +20,7 @@ phased_vcf_idx = 'whatshap_long_read_hic_phased.vcf.gz.tbi' # index file of the 
 assembly = 'sample.fasta.chr.fa' 
 
 # name of the long read file, copy to the seq folder
+# the suffix needs to be .fq.gz, or make it consistent with the suffix of 'chunk/chunk_{chunk}.fq.gz' below at line 58
 sequence = 'sample_ONT.fq.gz' 
 
 # sample name
