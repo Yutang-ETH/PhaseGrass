@@ -20,7 +20,7 @@ phased_vcf_idx = 'whatshap_long_read_hic_phased.vcf.gz.tbi' # index file of the 
 # this file can be found in the dip_grass/asm folder, copy to asm folder here
 assembly = 'sample.fasta.chr.fa' 
 
-# name of the unitig file, copy to the seq folder
+# name of the unitig file, copy to the seq folder, the suffix needs to be .fasta. If not, rename it to .fasta
 sequence = 'sample.p_utg.fasta'
 
 # sample name
