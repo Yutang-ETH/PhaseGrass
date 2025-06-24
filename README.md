@@ -1,9 +1,9 @@
-# PhaseGrass
+![ILFPC_assembly_workflow_full_updated drawio](https://github.com/user-attachments/assets/d0efe514-f878-454b-b01a-83fce74e4b84)# PhaseGrass
 ## What is PhaseGrass
 PhaseGrass is a single-sample reference-based phasing workflow, compatible with both PacBio HiFi and ONT data, generating chromosome-level haplotype-resolved diploid assembly containing balanced haplomes for highly heterozygous genomes. 
 
 ## Motivation
-A high level of heterozygosity might cause graph-based phasing methods to generate unbalanced haplomes. This has motivated us to develop PhaseGrass, a reference-based phasing workflow generating chromosome-level haplotype-resolved diploid assembly with balanced haplomes for highly heterozygous genomes. PhaseGrass was initially designed and tested for highly heterozygous forage grass species, such as _L. multiflorum_ and _L. perenne_, which possess 1 SNP per 20 bp and extensive structural variations between haplotypes through chromosomes. For other diploid species with a similar level of heterozygosity, PhaseGrass should also be applicable. 
+A high level of heterozygosity might cause graph-based phasing methods to generate unbalanced haplomes (meaning that one haplotype assembly could be extensively larger than the other in terms of the assembly size). This has motivated us to develop PhaseGrass, a reference-based phasing workflow generating chromosome-level haplotype-resolved diploid assembly with balanced haplomes for highly heterozygous genomes. PhaseGrass was initially designed and tested for highly heterozygous forage grass species, such as _L. multiflorum_ and _L. perenne_, which possess 1 SNP per 20 bp and extensive structural variations between haplotypes through chromosomes. For other diploid species with a similar level of heterozygosity, PhaseGrass should also be applicable. 
 
 ## Novelty
 Compared to other reference-based phasing methods ([DipAsm](https://github.com/shilpagarg/DipAsm), [PGAS](https://github.com/ptrebert/project-diploid-assembly), [WhatsHap](https://github.com/whatshap/whatshap)), the novelty of PhaseGrass is that we combine reference-based phasing with k-mer-based sequence binning instead of alignment-based read binning.
@@ -18,9 +18,7 @@ Compared to other reference-based phasing methods ([DipAsm](https://github.com/s
 
 
 Fig. 1 | PhaseGrass workflow overview
-![ILFPC_assembly_workflow_full_updated](https://github.com/user-attachments/assets/d908da7f-5f21-4f6e-9ae7-9e2ab10a2273)
-
-
+![ILFPC_assembly_workflow_full_updated drawio](https://github.com/user-attachments/assets/e85e8955-8ce4-445d-bbd2-3cd12b033015)
 
 
 
