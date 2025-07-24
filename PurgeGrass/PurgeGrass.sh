@@ -203,7 +203,7 @@ then
     echo "Found EXTRACT_pairs.success and mymcscanx/mcscanx_cb_position.txt, skip extract paired contigs, continue"
 else
     echo "Extract paired contigs based on micro-synteny by EXTRACT_pairs.sh"
-    ${bin}/EXTRACT_paris.sh
+    ${bin}/EXTRACT_pairs.sh
 fi
 
 if [ $? -eq 0 ] && [ -s mymcscanx/mcscanx_cb_position.txt ]
