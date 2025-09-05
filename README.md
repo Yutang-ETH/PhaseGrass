@@ -39,8 +39,12 @@ Step 5: assembling each set of ONT reads independently and haplotype-aware polis
 
 Step 6: final scaffolding and manual curation. ScaffoldGrass scaffolds the two ONT-derived contig assemblies or the two PacBio HiFi-derived unitig assemblies independently, resulting in two chromosome-level assemblies. JuiceGrass concatenates these two chromosome-level assemblies to construct a diploid Hi-C contact map for manual curation, which returns the final chromosome-level haplotype-resolved diploid assembly containing two haplomes.
 
+## System requirements  
+PhaseGrass only requires standard bioinformatic software tools, which are easy to be installed via conda.  
+PhaseGrass has been tested with Rocky Linux 8.10 (Green Obsidian).
+
 ## Usage
-For detailed usage, please visit the [wiki](https://github.com/Yutang-ETH/PhaseGrass/wiki)
+For detailed usage, please visit the [wiki](https://github.com/Yutang-ETH/PhaseGrass/wiki)  
 
 ## Acknowledgement
 I would like to sincerely thank authors of all the open-source programs and software used in PhaseGrass.
